@@ -1,16 +1,15 @@
-#!/bin/bash
+#!/usr/local/bin/bash
 #
 # Lab work #6, variant 7 - Process information script
+# Adapted for FreeBSD
 # Author: Student Full Name (FIO)
-# Description: Allows user to view and inspect system processes
 #
 
 # --- Configuration -----------------------------------------------------------
 FIO="SG"  # Developer initials (change to your own)
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(dirname "$0")"
-# Try to get absolute path; if fails, use relative
-SCRIPT_PATH_ABS="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd -P)/$SCRIPT_NAME" || SCRIPT_PATH_ABS="$0"
+SCRIPT_PATH_ABS="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd)/$SCRIPT_NAME" || SCRIPT_PATH_ABS="$0"
 START_TIME_SECONDS="$SECONDS"
 START_TIME_RAW="$(date '+%d-%m-%Y %H:%M:%S (%Z)')"
 
@@ -20,7 +19,6 @@ TMP_FILE=""
 if [[ ! -w "$TMP_DIR" ]]; then
     TMP_DIR="/tmp"
 fi
-# Will be created via mktemp later, after trap is set
 
 # Log files (for --d mode)
 LOG_ALL=""
@@ -71,7 +69,7 @@ check_error() {
     return $errcode
 }
 
-# Show process details by PID
+# Show process details by PID (FreeBSD ps syntax)
 show_process_info() {
     local pid="$1"
     if [[ -z "$pid" || ! -d "/proc/$pid" ]]; then
@@ -80,21 +78,17 @@ show_process_info() {
     fi
     echo "--- Detailed information for PID $pid ---"
     ps -p "$pid" -o pid,tty,stat,lstart,comm,args | sed 's/^/  /'
-    # If lstart not available, fallback to start
-    if [[ $? -ne 0 ]]; then
-        ps -p "$pid" -o pid,tty,stat,start,comm,args | sed 's/^/  /'
-    fi
 }
 
-# List processes based on filter
+# List processes based on filter (FreeBSD ps syntax)
 list_processes() {
     local filter_type="$1"
     local filter_value="$2"
-    local ps_cmd="ps -e -o pid,user,group,tty,comm,args"  # default all processes
+    local ps_cmd="ps -ax -o pid,user,group,tty,comm,args"  # default all processes
 
     case "$filter_type" in
         user)
-            ps_cmd="ps -u $filter_value -o pid,user,group,tty,comm,args 2>/dev/null"
+            ps_cmd="ps -U $filter_value -o pid,user,group,tty,comm,args 2>/dev/null"
             ;;
         group)
             ps_cmd="ps -g $filter_value -o pid,user,group,tty,comm,args 2>/dev/null"
@@ -103,7 +97,7 @@ list_processes() {
             ps_cmd="ps -t $filter_value -o pid,user,group,tty,comm,args 2>/dev/null"
             ;;
         all|"")
-            ps_cmd="ps -e -o pid,user,group,tty,comm,args"
+            ps_cmd="ps -ax -o pid,user,group,tty,comm,args"
             ;;
         *)
             echo "Invalid filter type" >&2
@@ -181,11 +175,10 @@ handle_sigusr1() {
 
 handle_sigusr2() {
     echo "--- SIGUSR2: Open files for script (PID $$) ---"
-    if command -v lsof >/dev/null 2>&1; then
-        lsof -p $$ 2>/dev/null | head -20 | sed 's/^/  /'
+    if command -v fstat >/dev/null 2>&1; then
+        fstat -p $$ 2>/dev/null | head -20 | sed 's/^/  /'
     else
-        echo "lsof not available, using fstat if possible:"
-        fstat -p $$ 2>/dev/null | head -20 | sed 's/^/  /' || echo "Cannot list open files."
+        echo "fstat not available"
     fi
 }
 
@@ -203,7 +196,6 @@ handle_c_option() {
         cleanup $RC_C_NOARG "Invalid directory for --c"
     fi
     echo "Searching for temporary files in: $dir"
-    # Find files matching pattern (script's temp files with initials)
     local temp_files=$(find "$dir" -maxdepth 1 -type f -name "*${FIO}*.tmp" -o -name "script_${FIO}.*" 2>/dev/null)
     if [[ -z "$temp_files" ]]; then
         echo "No temporary files found."
@@ -221,7 +213,7 @@ handle_c_option() {
     cleanup $RC_C_SUCCESS "--c option processed"
 }
 
-# Parse arguments manually (since getopts handles only short opts, we do long)
+# Parse arguments manually
 parse_args() {
     local args=("$@")
     local i=0
@@ -235,7 +227,6 @@ parse_args() {
                     cleanup $RC_C_NOARG "Missing dir for --c"
                 fi
                 FLAG_C="${args[$i]}"
-                # Process --c immediately (should be first priority)
                 handle_c_option "$FLAG_C"
                 ;;
             --d)
@@ -254,9 +245,7 @@ parse_args() {
                 FLAG_H=1
                 ;;
             --*)
-                # Combined long options like --hvd
                 if [[ "$arg" =~ ^--[dvsKhc]+$ ]]; then
-                    # Split into individual letters (skip --)
                     letters="${arg:2}"
                     for ((j=0; j<${#letters}; j++)); do
                         ch="${letters:$j:1}"
@@ -266,11 +255,8 @@ parse_args() {
                             s) FLAG_S=1 ;;
                             K) FLAG_K=1 ;;
                             h) FLAG_H=1 ;;
-                            c)
-                                # --c must be separate with argument, not combined
-                                echo "ERROR: -c cannot be combined with other options" >&2
-                                ;;
-                            *) echo "WARNING: Unknown option -$ch in $arg, ignored" >&2 ;;
+                            c) echo "ERROR: -c cannot be combined" >&2 ;;
+                            *) echo "WARNING: Unknown option -$ch ignored" >&2 ;;
                         esac
                     done
                 else
@@ -278,21 +264,19 @@ parse_args() {
                 fi
                 ;;
             *)
-                # Not an option starting with --, ignore (positional not expected)
                 ;;
         esac
         i=$((i+1))
     done
 }
 
-# --- Flag actions (ordered: d, v, s, k, h) ----------------------------------
+# --- Flag actions ----------------------------------------------------------
 
 apply_flag_d() {
     if [[ $FLAG_D -eq 0 ]]; then
         return
     fi
     echo "--- --d mode ---"
-    # Ask user for logging mode
     echo "Choose logging mode:"
     echo "1) One combined file (script_${FIO}.allout)"
     echo "2) Separate files (script_${FIO}.out and script_${FIO}.err)"
@@ -301,7 +285,6 @@ apply_flag_d() {
         read -p "Invalid, enter 1 or 2: " mode
     done
 
-    # Ask about existing files
     echo "Handle existing log files?"
     echo "1) Delete previous and start new"
     echo "2) Append to existing"
@@ -315,17 +298,14 @@ apply_flag_d() {
         open_mode=">>"
     fi
 
-    # Setup filenames based on mode
     local ts="$(date '+%d-%m-%Y %H:%M:%S')"
     echo "Start time: $ts"
 
     if [[ "$mode" == "1" ]]; then
         LOG_ALL="script_${FIO}.allout"
-        # If delete mode, truncate file
         if [[ "$exist_mode" == "1" && -f "$LOG_ALL" ]]; then
             > "$LOG_ALL"
         fi
-        # Redirect stdout and stderr to tee
         exec > >(tee -a "$LOG_ALL") 2>&1
     else
         LOG_OUT="script_${FIO}.out"
@@ -334,17 +314,15 @@ apply_flag_d() {
             [[ -f "$LOG_OUT" ]] && > "$LOG_OUT"
             [[ -f "$LOG_ERR" ]] && > "$LOG_ERR"
         fi
-        # Redirect stdout and stderr separately
         exec > >(tee -a "$LOG_OUT") 2> >(tee -a "$LOG_ERR" >&2)
     fi
 
-    # Register cleanup to print end time
     trap 'echo "End time: $(date "+%d-%m-%Y %H:%M:%S")"' EXIT
 }
 
 apply_flag_v() {
     if [[ $FLAG_V -eq 1 ]]; then
-        set -x  # Print commands and arguments
+        set -x
     fi
 }
 
@@ -352,7 +330,6 @@ apply_flag_s() {
     if [[ $FLAG_S -eq 0 ]]; then
         return
     fi
-    # Count other instances of this script (excluding current)
     local pids=$(pgrep -f "$SCRIPT_NAME" | grep -v $$ | wc -l)
     if [[ $pids -gt 0 ]]; then
         echo "ERROR: Another instance(s) of script is running ($pids other processes)" >&2
@@ -377,18 +354,11 @@ apply_flag_k() {
         else
             marker=""
         fi
-        # Extract info via ps
         ps -p "$pid" -o pid=,ppid=,uid=,gid=,tty=,lstart=,args= --no-headers 2>/dev/null | while read line; do
             echo "$line$marker"
         done
-        if [[ $? -ne 0 ]]; then
-            ps -p "$pid" -o pid=,ppid=,uid=,gid=,tty=,start=,args= --no-headers 2>/dev/null | while read line; do
-                echo "$line$marker"
-            done
-        fi
     done
 
-    # Ask to kill other instances
     read -p "Do you want to terminate all OTHER instances? (y/n) " killans
     if [[ "$killans" == "y" || "$killans" == "Y" ]]; then
         read -p "Send SIGTERM (1) or SIGKILL (2)? " sig
@@ -425,32 +395,28 @@ apply_flag_h() {
     echo "  System name       : $(uname -n)"
     echo "  Terminal          : $(tty 2>/dev/null || echo 'not a tty')"
     echo
-    # User/group info
     id_output=$(id)
-    echo "  RUID              : $(id -ru) ($(id -run))"
+    echo "  RUID              : $(id -u) ($(id -un))"
     echo "  EUID              : $(id -u) ($(id -un))"
-    echo "  RGID              : $(id -rg) ($(id -rgn))"
+    echo "  RGID              : $(id -g) ($(id -gn))"
     echo "  EGID              : $(id -g) ($(id -gn))"
     if [[ $(id -u) -eq 0 ]]; then
         echo "  ** WARNING: Script is run as superuser (UID=0) **"
     fi
     if [[ $(id -g) -eq 0 ]]; then
-        echo "  ** WARNING: Script is run with group administrators (GID=0) **"
+        echo "  ** WARNING: Script is run with group wheel (GID=0) **"
     fi
     echo
     echo "Script file information:"
     echo "  PID of this process : $$"
     echo "  Script name         : $SCRIPT_NAME"
-    echo "  Relative/Abs path   : $0"
-    echo "  Full absolute path  : $(realpath "$0" 2>/dev/null || echo "$SCRIPT_PATH_ABS")"
+    echo "  Full absolute path  : $SCRIPT_PATH_ABS"
     echo "  Command line        : $(ps -p $$ -o args= 2>/dev/null)"
-    # stat information
     if [[ -f "$0" ]]; then
-        stat_out=$(stat -c "  Size: %s bytes, Permissions: %A (%a), Modified: %y, Owner: %U (%u), Group: %G (%g)" "$0" 2>/dev/null)
+        stat_out=$(stat -f "  Size: %z bytes, Permissions: %Sp, Modified: %Sm, Owner: %Su (%u), Group: %Sg (%g)" "$0" 2>/dev/null)
         echo "$stat_out"
     fi
 
-    # Ask user whether to continue or exit
     echo
     read -p "Continue normal script execution? (y) or exit? (n): " cont
     if [[ "$cont" != "y" && "$cont" != "Y" ]]; then
@@ -458,7 +424,7 @@ apply_flag_h() {
     fi
 }
 
-# --- Menu functions (main functionality) -------------------------------------
+# --- Menu functions -----------------------------------------------------
 
 menu() {
     while true; do
@@ -525,40 +491,33 @@ menu() {
 
 # --- Main --------------------------------------------------------------------
 
-# Set traps
 trap handle_sigint SIGINT
 trap handle_sigquit SIGQUIT
 trap handle_sigterm SIGTERM
 trap handle_sigusr1 SIGUSR1
 trap handle_sigusr2 SIGUSR2
 
-# Parse command line arguments (this may exit if --c is given)
 parse_args "$@"
 
-# Create temporary file (after trap is set)
-TMP_FILE="$(mktemp -p "$TMP_DIR" "${SCRIPT_NAME}_${FIO}_XXXXXX.tmp")"
+TMP_FILE="$(mktemp -t "${SCRIPT_NAME}_${FIO}.XXXXXXXX.tmp")"
 check_error "mktemp"
 if [[ ! -f "$TMP_FILE" ]]; then
     echo "FATAL: Cannot create temporary file" >&2
     exit 1
 fi
 
-# Write startup info to temp file
 {
     echo "Script file: $SCRIPT_NAME"
     echo "PID: $$"
     echo "Start time: $START_TIME_RAW"
 } > "$TMP_FILE"
 
-# Apply flags in order (--d, --v, --s, --k, --h)
 apply_flag_d
 apply_flag_v
 apply_flag_s
 apply_flag_k
 apply_flag_h
 
-# Start main menu
 menu
 
-# Should not reach here, but just in case
 cleanup 0 "Normal end"
