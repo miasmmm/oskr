@@ -69,10 +69,11 @@ check_error() {
     return $errcode
 }
 
-# Show process details by PID (FreeBSD ps syntax)
+# Show process details by PID (Fixed for FreeBSD - no /proc dependency)
 show_process_info() {
     local pid="$1"
-    if [[ -z "$pid" || ! -d "/proc/$pid" ]]; then
+    # Проверяем существование процесса через ps (FreeBSD-friendly)
+    if [[ -z "$pid" ]] || ! ps -p "$pid" > /dev/null 2>&1; then
         echo "Process $pid does not exist or not accessible." >&2
         return 1
     fi
